@@ -1,0 +1,46 @@
+{
+  "name": "nous",
+  "version": "0.2.0",
+  "description": "An AI user perception system for Claude Code — silently models your behavior and injects context so Claude always knows where you left off",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "claude",
+    "claude-code",
+    "ai",
+    "memory",
+    "user-model",
+    "developer-tools",
+    "context-injection"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/yushenw/nous.git"
+  },
+  "homepage": "https://github.com/yushenw/nous#readme",
+  "bugs": {
+    "url": "https://github.com/yushenw/nous/issues"
+  },
+  "scripts": {
+    "build": "bun run build.ts",
+    "build-and-sync": "bun run build.ts && bun run sync.ts",
+    "release": "bun run build.ts && tar -czf scripts.tar.gz -C plugin/scripts .",
+    "dev": "bun --watch src/worker/server.ts",
+    "typecheck": "bunx tsc --noEmit",
+    "clean": "rm -rf plugin/scripts scripts.tar.gz"
+  },
+  "dependencies": {
+    "ai": "^4.0.0",
+    "@ai-sdk/anthropic": "^1.0.0",
+    "better-sqlite3": "^11.0.0",
+    "express": "^4.18.0",
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.0",
+    "@types/express": "^4.17.0",
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  }
+}
