@@ -1,6 +1,5 @@
 import { getDb } from '../storage/database.js'
 import { UserModelStore } from '../storage/user-model-store.js'
-import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { ClaudeProvider } from '../provider/claude.js'
 import { config } from '../config.js'
 import { extractSketch } from '../indexer/sketch-extractor.js'
@@ -49,7 +48,6 @@ function inferCognitiveState(content: string): UserModel['cognitiveState'] {
 
 export class EventProcessor {
   private userModelStore = new UserModelStore()
-  private skStore = new StableKnowledgeStore()
   private ai = new ClaudeProvider(config.model)
   private opLogStore = new OperationLogStore()
   private digestGenerator = new DigestGenerator()
@@ -282,14 +280,6 @@ export class EventProcessor {
       this.userModelStore.addBlindSpot(digest.notable)
     }
 
-    // Distill high-value sessions into stable knowledge.
-    // Trigger if: any resolved session, OR a building session that wasn't abandoned.
-    const shouldDistill =
-      digest.outcome === 'resolved' ||
-      (digest.mode === 'building' && digest.outcome !== 'abandoned')
-    if (shouldDistill) {
-      await this.distillFromDigest(event, digest)
-    }
   }
 
   /**
@@ -421,59 +411,4 @@ Respond with JSON array only, no markdown fences.`
     this.knowledgeWriter.updateIndex(topItems)
   }
 
-  private async distillFromDigest(
-    event: HostEvent,
-    digest: Omit<import('../types/index.js').SessionDigest, 'id'>,
-  ): Promise<void> {
-    // Only distill building sessions that produced actual file changes
-    const sketches = this.opLogStore.getBySession(event.sessionId)
-    const editedFiles = [...new Set(
-      sketches
-        .filter(s => (s.toolName === 'Edit' || s.toolName === 'Write') && s.descriptor.path)
-        .map(s => s.descriptor.path as string)
-    )]
-
-    if (editedFiles.length === 0) return
-
-    const prompt = `A coding session just completed. Decide if it produced durable knowledge worth preserving.
-
-Session summary: ${digest.summary}
-Topics: ${digest.topics.join(', ')}
-Files modified: ${editedFiles.join(', ')}
-
-If yes, respond with JSON:
-{
-  "title": "concise title",
-  "content": "what was built/decided and why it matters",
-  "type": "decision|feature|bugfix|discovery"
-}
-
-If not worth preserving, respond with: {"skip": true}`
-
-    let parsed: Record<string, unknown>
-    try {
-      const raw = await this.ai.complete(prompt)
-      const match = raw.match(/\{[\s\S]*\}/)
-      if (!match) return
-      parsed = JSON.parse(match[0]) as Record<string, unknown>
-    } catch {
-      return
-    }
-
-    if (parsed.skip === true) return
-
-    const now = Date.now()
-    this.skStore.insert({
-      projectPath: event.projectPath,
-      scope: 'project',
-      type: (parsed.type as import('../types/index.js').ObservationType) ?? 'discovery',
-      title: (parsed.title as string) ?? digest.summary,
-      content: (parsed.content as string) ?? '',
-      concepts: digest.topics,
-      sourceObservationIds: [],
-      pinnedByUser: false,
-      createdAt: now,
-      updatedAt: now,
-    })
-  }
 }

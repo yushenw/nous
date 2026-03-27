@@ -47,21 +47,6 @@ CREATE TABLE IF NOT EXISTS observations (
   created_at INTEGER NOT NULL
 );
 
--- stable_knowledge table: permanent memory layer
-CREATE TABLE IF NOT EXISTS stable_knowledge (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  project_path TEXT,
-  scope TEXT NOT NULL DEFAULT 'project',
-  type TEXT NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  concepts TEXT NOT NULL DEFAULT '[]',
-  source_observation_ids TEXT NOT NULL DEFAULT '[]',
-  pinned_by_user INTEGER NOT NULL DEFAULT 0,
-  created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
-);
-
 -- session_summaries table
 CREATE TABLE IF NOT EXISTS session_summaries (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -108,12 +93,6 @@ CREATE INDEX IF NOT EXISTS idx_obs_created_at ON observations (created_at);
 CREATE INDEX IF NOT EXISTS idx_obs_type ON observations (type);
 CREATE INDEX IF NOT EXISTS idx_obs_importance ON observations (importance_score);
 CREATE INDEX IF NOT EXISTS idx_obs_scope ON observations (scope);
-
--- indexes for stable_knowledge
-CREATE INDEX IF NOT EXISTS idx_sk_project_path ON stable_knowledge (project_path);
-CREATE INDEX IF NOT EXISTS idx_sk_created_at ON stable_knowledge (created_at);
-CREATE INDEX IF NOT EXISTS idx_sk_type ON stable_knowledge (type);
-CREATE INDEX IF NOT EXISTS idx_sk_pinned ON stable_knowledge (pinned_by_user);
 
 -- knowledge_items table: cross-session knowledge inquiry tracking
 CREATE TABLE IF NOT EXISTS knowledge_items (

@@ -41,10 +41,6 @@ export interface StopPayload {
   lastAssistantMessage?: string
 }
 
-// ExpertiseLevel: how well the user knows a topic
-// @deprecated: replaced by interests in UserModel
-export type ExpertiseLevel = 'deep' | 'mid' | 'shallow'
-
 // UserModel: the core asset — continuously updated developer profile
 export interface UserModel {
   userId: string  // hash of machine id + user
@@ -102,21 +98,6 @@ export interface Observation {
   contentHash: string
   importanceScore: number
   createdAt: number
-}
-
-// StableKnowledge: permanent memory layer, distilled from observations
-export interface StableKnowledge {
-  id?: number
-  projectPath: string | null  // null = global knowledge
-  scope: MemoryScope
-  type: ObservationType
-  title: string
-  content: string
-  concepts: string[]
-  sourceObservationIds: number[]
-  pinnedByUser: boolean
-  createdAt: number
-  updatedAt: number
 }
 
 // SessionSummary: end-of-session digest

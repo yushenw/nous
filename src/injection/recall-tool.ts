@@ -1,7 +1,6 @@
-import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { SessionDigestStore } from '../storage/session-digest-store.js'
 import { OperationLogStore } from '../storage/operation-log-store.js'
-import type { StableKnowledge, SessionDigest, OperationSketch } from '../types/index.js'
+import type { SessionDigest, OperationSketch } from '../types/index.js'
 
 export interface RecallResult {
   markdown: string
@@ -9,7 +8,6 @@ export interface RecallResult {
 }
 
 export class RecallTool {
-  private skStore = new StableKnowledgeStore()
   private digestStore = new SessionDigestStore()
   private opLogStore = new OperationLogStore()
 
@@ -18,14 +16,12 @@ export class RecallTool {
    * Returns formatted Markdown suitable for injection into model context.
    */
   recall(query: string, projectPath?: string): RecallResult {
-    const knowledge = this.skStore.search(query)
     const digests = this.digestStore.search(query, projectPath)
 
     const sections: string[] = []
-    if (knowledge.length > 0) sections.push(this.formatKnowledge(knowledge))
     if (digests.length > 0) sections.push(this.formatDigests(digests))
 
-    const totalHits = knowledge.length + digests.length
+    const totalHits = digests.length
 
     if (sections.length === 0) {
       return { markdown: `_No results found for: "${query}"_`, totalHits: 0 }
@@ -144,16 +140,6 @@ export class RecallTool {
   }
 
   // --- Formatters ---
-
-  private formatKnowledge(items: StableKnowledge[]): string {
-    const lines = ['### Stable Knowledge']
-    for (const item of items) {
-      const pinned = item.pinnedByUser ? ' [pinned]' : ''
-      lines.push(`#### [${item.type}] ${item.title}${pinned}`)
-      lines.push(item.content)
-    }
-    return lines.join('\n')
-  }
 
   private formatDigests(items: SessionDigest[]): string {
     const lines = ['### Past Sessions']

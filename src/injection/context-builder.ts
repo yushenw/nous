@@ -1,5 +1,4 @@
 import { UserModelStore } from '../storage/user-model-store.js'
-import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { SessionDigestStore } from '../storage/session-digest-store.js'
 import { KnowledgeStore } from '../storage/knowledge-store.js'
 import { getDb } from '../storage/database.js'
@@ -9,7 +8,6 @@ const MS_PER_DAY = 86_400_000
 
 export class ContextBuilder {
   private userModelStore = new UserModelStore()
-  private skStore = new StableKnowledgeStore()
   private digestStore = new SessionDigestStore()
   private knowledgeStore = new KnowledgeStore()
 
@@ -23,9 +21,6 @@ export class ContextBuilder {
 
     const profile = this.buildProfileSection(projectPath)
     if (profile) sections.push(profile)
-
-    const knowledge = this.buildKnowledgeSection(projectPath)
-    if (knowledge) sections.push(knowledge)
 
     const history = this.buildHistorySection(projectPath)
     if (history) sections.push(history)
@@ -115,25 +110,6 @@ export class ContextBuilder {
 
     // Only emit section if there's actual content beyond the header
     return lines.length > 1 ? lines.join('\n') : null
-  }
-
-  private buildKnowledgeSection(projectPath: string): string | null {
-    const items = this.skStore.getAll(projectPath)
-    if (items.length === 0) return null
-
-    // Pinned items first, then by recency; cap at 5 to control token cost
-    const sorted = [...items].sort((a, b) => {
-      if (a.pinnedByUser !== b.pinnedByUser) return a.pinnedByUser ? -1 : 1
-      return b.updatedAt - a.updatedAt
-    }).slice(0, 5)
-
-    const lines = ['## Stable Knowledge']
-    for (const item of sorted) {
-      const pin = item.pinnedByUser ? ' [pinned]' : ''
-      lines.push(`### [${item.type}] ${item.title}${pin}`)
-      lines.push(item.content)
-    }
-    return lines.join('\n')
   }
 
   private buildHistorySection(projectPath: string): string | null {
