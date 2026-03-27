@@ -1,33 +1,160 @@
 # Nous
 
-**An AI user perception system for Claude Code.** Not a memory log — a continuously updated model of you as a developer. Nous observes your behavior silently, builds a profile over time, and injects relevant context at the start of every session so Claude always knows where you left off.
+**A user perception layer for Claude Code.** Nous silently observes your coding sessions, builds a model of you as a developer, and injects relevant context at the start of every session — so Claude always knows who you are, what you're working on, and where you left off.
 
 [中文文档](./README_CN.md)
 
 ---
 
-## How it works
+## The Problem
+
+Claude Code starts fresh every session. Every time you open a new conversation, you have to re-explain:
+
+- What the project is about
+- What you were working on last time
+- Your preferred tech stack
+- The bug you were in the middle of debugging
+
+Nous solves this automatically, without any manual effort.
+
+---
+
+## Architecture
 
 ```
-You work normally with Claude Code
-        ↓
-Nous records every tool call in < 1ms (no AI, no content stored)
-  — which files you read, what commands you ran, what you searched
-        ↓
-During the session: every 5 messages, knowledge items are extracted
-  — concepts you asked about, how-to questions, project-specific insights
-  — written to ~/user_memory/ automatically
-        ↓
-When the session ends, one AI call generates a digest
-  — summary, mode, domain, notable patterns
-        ↓
-Next time you open Claude Code
-  — session history, recent questions, and last stopping point
-    are automatically injected into the system prompt
-  — Claude knows the context without you explaining anything
+Claude Code (host)
+    │  hooks (stdin/stdout)
+    ▼
+[Hook Scripts] ── HTTP ──► [Worker Service :37888]
+                                │
+                    ┌───────────┼────────────┐
+                    ▼           ▼            ▼
+            EventProcessor  ContextBuilder  KnowledgeWriter
+                    │
+            [SQLite ~/.nous/nous.db]
+                    │
+         ┌──────────┴──────────┐
+         ▼                     ▼
+   operation_log         session_digests
+   (lightweight records)  (AI-generated summaries)
+         │                     │
+         └──────────┬──────────┘
+                    ▼
+     user_model / stable_knowledge / knowledge_items
+     (user profile / stable knowledge / inquiry tracking)
+
+[MCP Server] ── stdio ──► Claude (active tool calls)
 ```
 
-**Stores structure, not content.** File paths, command prefixes, search queries — never file contents. The model reconstructs meaning from structure using its world knowledge.
+---
+
+## How It Works
+
+### 1. Hook Interception — Passive Observation
+
+Claude Code exposes four hook points; Nous connects to all of them:
+
+| Hook | Trigger | What Nous does |
+|------|---------|----------------|
+| `SessionStart` | New session begins | Pull history and inject into system prompt |
+| `UserPromptSubmit` | User sends a message | Buffer messages; trigger knowledge extraction every 5 |
+| `PostToolUse` | After each tool call | Extract a lightweight sketch into `operation_log` |
+| `Stop` / `SessionEnd` | Session ends | Trigger AI digest generation |
+
+**Key design constraint:** hooks must respond fast (Claude Code waits), so tool-call recording is synchronous and AI-free. AI analysis runs asynchronously after the session ends.
+
+### 2. Sketch Extraction — Structured Behavior Recording
+
+File contents are never stored. Only structural "sketches" are extracted:
+
+```
+Read    src/storage/session-digest-store.ts:1-50
+Edit    src/storage/session-digest-store.ts (modify ~3L)
+Bash    bun test → exit 0
+Grep    "aggregateTopics" [*.ts]
+```
+
+Each sketch contains: tool name, file path / command prefix / search query, success/failure, lines changed. This is the raw data source for the entire system.
+
+### 3. Digest Generation — AI Understanding Per Session
+
+At session end, all sketches are fed to a Claude model (default: Haiku), producing a structured summary:
+
+```json
+{
+  "summary": "Fixed recall multi-word search bug in session-digest-store.ts",
+  "mode": "debugging",
+  "domain": "tooling",
+  "topics": ["storage", "recall", "search", "digest"],
+  "outcome": "resolved",
+  "notable": "User pinpointed the LIKE pattern limitation immediately"
+}
+```
+
+Digests are the system's core knowledge unit — all queries are built on them.
+
+### 4. Knowledge Inquiry Tracking — Cross-Session Learning
+
+Every 5 messages, Nous extracts concepts and how-tos from the conversation, then deduplicates with Jaccard similarity:
+
+- Repeated questions accumulate weight: `weight = 1.0 + category_base + 0.5 × repeat_count`
+- Pure concepts (WAL mode, Jaccard similarity) surface globally across all projects
+- Project-specific how-tos are boosted when you're working in that directory
+- Results are auto-written to `~/user_memory/` as Markdown — open anytime to review
+
+```
+~/user_memory/
+  knowledge_index.md       # global top-30 by weight, always current
+  2026-03-28/
+    knowledge_log.md       # items extracted today, append-only
+```
+
+### 5. Context Injection — New Sessions Know History
+
+At session start, the `SessionStart` hook calls `/api/context` and injects a Markdown block into the system prompt. Claude sees this before you type a word:
+
+```
+## Developer Profile
+Active domains — web-backend, tooling
+Phase — implement
+Recent topics — worker, event-processor, sqlite
+
+## Recent Questions
+- [concept ×3] Jaccard similarity (~/pjs/nous) — intersection/union ratio; >0.6 considered similar
+- [howto ×2]   SQLite WAL mode (~/pjs/nous) — write log first; allows concurrent reads
+- [concept ×1] BetterSqlite3 vs sqlite3 (~/pjs/nous) — synchronous, better for high-freq queries
+
+## Session History
+### Implemented knowledge inquiry tracking system (today)
+Mode: building · Topics: worker, storage, knowledge
+### Debugged recall multi-word search bug (1d ago) [resolved]
+Mode: debugging · Topics: storage, recall, sqlite
+
+## Last Session
+**Summary:** Implemented session digest generator, one AI call per session
+**Outcome:** resolved
+```
+
+### 6. User Model — Incremental Developer Profile
+
+Derived from all historical digests and accumulated over time:
+
+- **Active domains** — inferred from `domain` field across sessions (web-backend, systems, tooling…)
+- **Working style** — debug-heavy vs. build-heavy, current phase (explore / implement / debug)
+- **Blind spots** — recurring patterns flagged in the `notable` field
+- **Knowledge interests** — what you keep asking about, weighted by repetition
+
+---
+
+## Layered Memory Design
+
+```
+operation_log     ←  working memory    (raw operation stream, < 1ms per call)
+session_digests   ←  short-term memory (condensed per-session summaries)
+knowledge_items   ←  inquiry memory    (cross-session questions and concepts)
+stable_knowledge  ←  long-term memory  (technical decisions worth keeping)
+user_model        ←  metacognition     (understanding of you as a developer)
+```
 
 ---
 
@@ -46,7 +173,7 @@ Next time you open Claude Code
 curl -fsSL https://raw.githubusercontent.com/yushenw/nous/main/install.sh | sh
 ```
 
-That's it. The script:
+The script:
 - Downloads pre-built scripts to `~/.nous/`
 - Installs the native SQLite dependency
 - Registers hooks in `~/.claude/settings.json`
@@ -82,64 +209,9 @@ Open a new Claude Code session — done.
 
 ---
 
-## What gets injected
-
-After a few sessions, every new Claude Code session automatically starts with context like:
-
-```
-## Developer Profile
-Active domains — web-backend, tooling
-Style — tends to debug at runtime
-Phase — implement
-Recent topics — worker, event-processor, sqlite
-
-## Recent Questions
-- [concept ×3] Jaccard 相似度 (~/pjs/nous) — 两个集合交集/并集的比值，>0.6 认为内容相似
-- [howto ×2]   SQLite WAL 模式 (~/pjs/nous) — 先写日志再写主库，允许并发读
-- [concept ×1] BetterSqlite3 vs sqlite3 (~/pjs/nous) — 同步库，高频查询性能更优
-
-## Session History
-### Implemented knowledge inquiry tracking system (today)
-Mode: building · Topics: worker, storage, knowledge
-### Debugged recall multi-word search bug (1d ago) [resolved]
-Mode: debugging · Topics: storage, recall, sqlite
-
-## Last Session
-**Summary:** Implemented session digest generator, one AI call per session
-**Outcome:** resolved
-```
-
-Claude sees this before you say a word.
-
----
-
-## Knowledge Tracking
-
-Nous automatically tracks questions and concepts you encounter across sessions.
-
-**How it works:**
-- Every 5 messages, Nous extracts knowledge items (concepts, how-tos, project insights) from the conversation
-- Items are deduplicated with Jaccard similarity — repeated questions increase weight
-- Written to `~/user_memory/` automatically — open anytime to review
-
-**Retrieval is path-aware:**
-- Pure concepts (Jaccard similarity, WAL mode) float globally regardless of project
-- Project-specific how-tos are boosted when you're in that project directory
-- Each item shows which directory it came from, so you can find related source files
-
-**Files written automatically:**
-```
-~/user_memory/
-  knowledge_index.md          # global top-30 by weight, always up-to-date
-  2026-03-28/
-    knowledge_log.md          # items extracted today, append-only
-```
-
----
-
 ## MCP Tools (optional)
 
-If you configure the Nous MCP Server, Claude can actively query your history mid-conversation:
+Configure the Nous MCP Server to let Claude actively query your history mid-conversation:
 
 ```json
 {
@@ -153,8 +225,6 @@ If you configure the Nous MCP Server, Claude can actively query your history mid
 ```
 
 Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
-
-Available tools:
 
 | Tool | Description |
 |------|-------------|
@@ -253,11 +323,11 @@ claude auth status
 
 **Q: Does it work across projects?**
 
-Yes. The user model is global. Session history is stored per project path, and only the current project's sessions are injected. Pure concept knowledge items surface across all projects regardless of where they were captured.
+Yes. The user model is global. Session history is stored per project path — only the current project's sessions are injected. Pure concept knowledge items surface across all projects regardless of where they were captured.
 
 **Q: Where are knowledge items written, and how do I review them?**
 
-Auto-written to `~/user_memory/`. `knowledge_index.md` is a global top-30 index, updated after every extraction. Open it anytime to review, or use the `review()` MCP tool mid-conversation.
+Auto-written to `~/user_memory/`. `knowledge_index.md` is a global top-30 index updated after every extraction. Open it anytime, or use the `review()` MCP tool mid-conversation.
 
 ---
 
