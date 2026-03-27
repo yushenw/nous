@@ -3,11 +3,9 @@ import { Database } from '../storage/database.js'
 import { ClaudeCodeAdapter } from '../adapters/claude-code/adapter.js'
 import { EventProcessor } from './event-processor.js'
 import { RecallTool } from '../injection/recall-tool.js'
-import { ObservationStore } from '../storage/observation-store.js'
 import { ContextBuilder } from '../injection/context-builder.js'
+import { config } from '../config.js'
 import type { HostEvent } from '../types/index.js'
-
-const PORT = parseInt(process.env.NOUS_PORT ?? '37888', 10)
 
 // Initialize database eagerly so readiness check is accurate
 let dbReady = false
@@ -24,7 +22,6 @@ app.use(express.json({ limit: '2mb' }))
 const adapter = new ClaudeCodeAdapter()
 const processor = new EventProcessor()
 const recallTool = new RecallTool()
-const obsStore = new ObservationStore()
 const contextBuilder = new ContextBuilder()
 
 // ---------------------------------------------------------------------------
@@ -223,33 +220,9 @@ app.post('/api/prompt-context', (req, res) => {
 })
 
 // ---------------------------------------------------------------------------
-// Observation list endpoint (for debugging / viewer)
-// ---------------------------------------------------------------------------
-
-app.get('/api/observations', (req, res) => {
-  if (!dbReady) {
-    res.status(503).json({ error: 'not ready' })
-    return
-  }
-
-  const projectPath = req.query.project as string | undefined
-  const limit = parseInt((req.query.limit as string) ?? '50', 10)
-
-  try {
-    const items = projectPath
-      ? obsStore.queryRecent(projectPath, limit)
-      : obsStore.queryGlobal(limit)
-    res.json({ items })
-  } catch (err) {
-    console.error('[nous] observations error:', err)
-    res.status(500).json({ error: 'internal error' })
-  }
-})
-
-// ---------------------------------------------------------------------------
 // Start server
 // ---------------------------------------------------------------------------
 
-app.listen(PORT, '127.0.0.1', () => {
-  console.log(`[nous] worker listening on http://127.0.0.1:${PORT}`)
+app.listen(config.port, '127.0.0.1', () => {
+  console.log(`[nous] worker listening on http://127.0.0.1:${config.port}`)
 })

@@ -1,0 +1,16 @@
+{
+  "name": "nous",
+  "version": "0.2.0",
+  "description": "AI user perception system — silently models your behavior and injects context so Claude always knows where you left off",
+  "author": {
+    "name": "yushenw",
+    "url": "https://github.com/yushenw"
+  },
+  "homepage": "https://github.com/yushenw/nous#readme",
+  "repository": "https://github.com/yushenw/nous",
+  "license": "MIT",
+  "keywords": ["perception", "user-model", "context", "hooks", "memory"],
+  "agents": [],
+  "skills": [],
+  "commands": []
+}

@@ -1,5 +1,5 @@
 import { getDb } from './database.js'
-import type { UserModel, ExpertiseLevel } from '../types/index.js'
+import type { UserModel } from '../types/index.js'
 
 // Row shape as stored in SQLite (all JSON fields are strings)
 interface UserModelRow {
@@ -18,13 +18,24 @@ function rowToModel(row: UserModelRow): UserModel {
   return {
     userId: row.user_id,
     updatedAt: row.updated_at,
-    expertise: JSON.parse(row.expertise) as Record<string, ExpertiseLevel>,
+    interests: JSON.parse(row.expertise) as UserModel['interests'],
     workingStyle: JSON.parse(row.working_style) as UserModel['workingStyle'],
     blindSpots: JSON.parse(row.blind_spots) as string[],
     deadEnds: JSON.parse(row.dead_ends) as string[],
     currentFocus: JSON.parse(row.current_focus) as UserModel['currentFocus'],
     cognitiveState: row.cognitive_state as UserModel['cognitiveState'],
   }
+}
+
+// Jaccard word overlap: intersection / union of word sets (words length > 3)
+function wordOverlap(a: string, b: string): number {
+  const words = (s: string) => new Set(s.toLowerCase().split(/\W+/).filter(w => w.length > 3))
+  const wa = words(a)
+  const wb = words(b)
+  let intersection = 0
+  for (const w of wa) if (wb.has(w)) intersection++
+  const union = wa.size + wb.size - intersection
+  return union === 0 ? 1 : intersection / union
 }
 
 export class UserModelStore {
@@ -55,7 +66,7 @@ export class UserModelStore {
         updated_at = excluded.updated_at
     `).run(
       model.userId,
-      JSON.stringify(model.expertise),
+      JSON.stringify(model.interests),
       JSON.stringify(model.workingStyle),
       JSON.stringify(model.blindSpots),
       JSON.stringify(model.deadEnds),
@@ -84,12 +95,14 @@ export class UserModelStore {
     const model = this.get()
     if (!model) return
 
+    // Exact dedup
     if (model.blindSpots.includes(pattern)) return
 
-    // Keep the most recent MAX_BLIND_SPOTS entries
-    const MAX_BLIND_SPOTS = 20
-    const updated = [...model.blindSpots, pattern].slice(-MAX_BLIND_SPOTS)
+    // Fuzzy dedup: skip if >60% word overlap with any existing entry
+    if (model.blindSpots.some(existing => wordOverlap(existing, pattern) > 0.6)) return
 
+    // Keep the most recent 10 entries
+    const updated = [...model.blindSpots, pattern].slice(-10)
     db.prepare(`
       UPDATE user_model SET blind_spots = ?, updated_at = ? WHERE id = 1
     `).run(JSON.stringify(updated), Date.now())
@@ -108,14 +121,4 @@ export class UserModelStore {
     }
   }
 
-  updateExpertise(topic: string, level: ExpertiseLevel): void {
-    const db = getDb()
-    const model = this.get()
-    if (!model) return
-
-    model.expertise[topic] = level
-    db.prepare(`
-      UPDATE user_model SET expertise = ?, updated_at = ? WHERE id = 1
-    `).run(JSON.stringify(model.expertise), Date.now())
-  }
 }

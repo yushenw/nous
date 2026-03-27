@@ -14,10 +14,15 @@ You work normally with Claude Code
 Nous records every tool call in < 1ms (no AI, no content stored)
   — which files you read, what commands you ran, what you searched
         ↓
-When the session ends, one AI call generates a one-sentence digest
+During the session: every 5 messages, knowledge items are extracted
+  — concepts you asked about, how-to questions, project-specific insights
+  — written to ~/user_memory/ automatically
+        ↓
+When the session ends, one AI call generates a digest
+  — summary, mode, domain, notable patterns
         ↓
 Next time you open Claude Code
-  — your recent topics, session history, and last stopping point
+  — session history, recent questions, and last stopping point
     are automatically injected into the system prompt
   — Claude knows the context without you explaining anything
 ```
@@ -83,14 +88,21 @@ After a few sessions, every new Claude Code session automatically starts with co
 
 ```
 ## Developer Profile
-Expertise — expert: typescript · familiar: rust · learning: tokio
-Recent topics — nous, event-processor, mcp, sqlite
+Active domains — web-backend, tooling
+Style — tends to debug at runtime
+Phase — implement
+Recent topics — worker, event-processor, sqlite
+
+## Recent Questions
+- [concept ×3] Jaccard 相似度 (~/pjs/nous) — 两个集合交集/并集的比值，>0.6 认为内容相似
+- [howto ×2]   SQLite WAL 模式 (~/pjs/nous) — 先写日志再写主库，允许并发读
+- [concept ×1] BetterSqlite3 vs sqlite3 (~/pjs/nous) — 同步库，高频查询性能更优
 
 ## Session History
-### Implemented Phase 3 session digest, replaced per-tool AI analysis (today)
-Mode: building · Topics: nous, digest, typescript
-### Debugged better-sqlite3 native module deployment (1d ago) [resolved]
-Mode: debugging · Topics: nodejs, sqlite, deployment
+### Implemented knowledge inquiry tracking system (today)
+Mode: building · Topics: worker, storage, knowledge
+### Debugged recall multi-word search bug (1d ago) [resolved]
+Mode: debugging · Topics: storage, recall, sqlite
 
 ## Last Session
 **Summary:** Implemented session digest generator, one AI call per session
@@ -98,6 +110,30 @@ Mode: debugging · Topics: nodejs, sqlite, deployment
 ```
 
 Claude sees this before you say a word.
+
+---
+
+## Knowledge Tracking
+
+Nous automatically tracks questions and concepts you encounter across sessions.
+
+**How it works:**
+- Every 5 messages, Nous extracts knowledge items (concepts, how-tos, project insights) from the conversation
+- Items are deduplicated with Jaccard similarity — repeated questions increase weight
+- Written to `~/user_memory/` automatically — open anytime to review
+
+**Retrieval is path-aware:**
+- Pure concepts (Jaccard similarity, WAL mode) float globally regardless of project
+- Project-specific how-tos are boosted when you're in that project directory
+- Each item shows which directory it came from, so you can find related source files
+
+**Files written automatically:**
+```
+~/user_memory/
+  knowledge_index.md          # global top-30 by weight, always up-to-date
+  2026-03-28/
+    knowledge_log.md          # items extracted today, append-only
+```
 
 ---
 
@@ -110,11 +146,13 @@ If you configure the Nous MCP Server, Claude can actively query your history mid
   "mcpServers": {
     "nous": {
       "command": "node",
-      "args": ["~/.nous/scripts/mcp-server.cjs"]
+      "args": ["/Users/yourname/.nous/scripts/mcp-server.cjs"]
     }
   }
 }
 ```
+
+Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
 
 Available tools:
 
@@ -123,16 +161,20 @@ Available tools:
 | `recall("jwt auth")` | Search past sessions and stable knowledge |
 | `resume("rust")` | Reconstruct the context of the last matching session |
 | `topics()` | List recently active topics with session counts |
+| `review()` | Review accumulated knowledge items sorted by weight |
 
 Example:
 
 ```
-You:    continue where we left off on the auth work
-Claude: (calls resume("auth"))
-        Last session: implementing JWT refresh token rotation.
-        You modified src/auth/jwt.ts and created src/auth/refresh.ts.
-        One test was still failing when the session ended.
-        Want to start there?
+You:    show me recent knowledge items about sqlite
+Claude: (calls review(query="sqlite"))
+        [howto ×3] SQLite upsert syntax — weight 2.9
+        INSERT INTO ... ON CONFLICT(id) DO UPDATE SET col = excluded.col
+        ~/pjs/nous · sqlite, sql
+
+        [concept ×1] SQLite WAL mode — weight 2.5
+        Write-Ahead Logging allows concurrent reads during writes.
+        ~/pjs/nous · sqlite, concurrency, performance
 ```
 
 ---
@@ -142,7 +184,9 @@ Claude: (calls resume("auth"))
 | Environment variable | Default | Description |
 |----------------------|---------|-------------|
 | `NOUS_PORT` | `37888` | Worker HTTP port |
-| `NOUS_DATA_DIR` | `~/.nous` | Data directory |
+| `NOUS_DATA_DIR` | `~/.nous` | SQLite database directory |
+| `NOUS_MODEL` | `haiku` | Claude model for digest and knowledge extraction |
+| `NOUS_MEMORY_DIR` | `~/user_memory` | Directory for auto-generated knowledge markdown files |
 | `ANTHROPIC_API_KEY` | — | Omit to reuse Claude Code's login session |
 
 ---
@@ -151,7 +195,7 @@ Claude: (calls resume("auth"))
 
 - All data is stored locally in `~/.nous/nous.db` (SQLite)
 - File **contents** are never stored — only paths, command prefixes (first 60 chars), and search queries
-- Session digests are generated by Claude using the same auth as your Claude Code session
+- Session digests and knowledge extraction are generated by Claude using the same auth as your Claude Code session
 - Nothing is sent to third-party services
 
 To inspect what's recorded:
@@ -188,6 +232,32 @@ The Worker picks up new scripts automatically on next Claude Code launch.
 pkill -f worker-service.cjs || true
 rm -rf ~/.nous
 ```
+
+---
+
+## FAQ
+
+**Q: No context injected when I open Claude Code?**
+
+Context becomes rich after 2–3 real sessions. Check the Worker is running:
+```bash
+curl http://127.0.0.1:37888/api/health
+```
+
+**Q: Session digests using rule-based generation instead of AI?**
+
+Nous reuses Claude Code's login session. Confirm you're logged in:
+```bash
+claude auth status
+```
+
+**Q: Does it work across projects?**
+
+Yes. The user model is global. Session history is stored per project path, and only the current project's sessions are injected. Pure concept knowledge items surface across all projects regardless of where they were captured.
+
+**Q: Where are knowledge items written, and how do I review them?**
+
+Auto-written to `~/user_memory/`. `knowledge_index.md` is a global top-30 index, updated after every extraction. Open it anytime to review, or use the `review()` MCP tool mid-conversation.
 
 ---
 

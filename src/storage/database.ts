@@ -1,12 +1,7 @@
 import BetterSqlite3 from 'better-sqlite3'
 import { existsSync, mkdirSync } from 'fs'
-import { homedir } from 'os'
 import { join } from 'path'
-
-// Resolve the data directory: prefer NOUS_DATA_DIR env var, fallback to ~/.nous
-function resolveDataDir(): string {
-  return process.env.NOUS_DATA_DIR ?? join(homedir(), '.nous')
-}
+import { config } from '../config.js'
 
 const DDL = `
 -- user_model table: single row, continuously updated
@@ -119,6 +114,23 @@ CREATE INDEX IF NOT EXISTS idx_sk_project_path ON stable_knowledge (project_path
 CREATE INDEX IF NOT EXISTS idx_sk_created_at ON stable_knowledge (created_at);
 CREATE INDEX IF NOT EXISTS idx_sk_type ON stable_knowledge (type);
 CREATE INDEX IF NOT EXISTS idx_sk_pinned ON stable_knowledge (pinned_by_user);
+
+-- knowledge_items table: cross-session knowledge inquiry tracking
+CREATE TABLE IF NOT EXISTS knowledge_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'concept',
+  weight REAL NOT NULL DEFAULT 1.0,
+  ask_count INTEGER NOT NULL DEFAULT 1,
+  project_path TEXT NOT NULL,
+  tags TEXT NOT NULL DEFAULT '[]',
+  session_ids TEXT NOT NULL DEFAULT '[]',
+  created_at INTEGER NOT NULL,
+  last_seen_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ki_project ON knowledge_items (project_path, last_seen_at);
+CREATE INDEX IF NOT EXISTS idx_ki_weight ON knowledge_items (weight);
 `
 
 export class Database {
@@ -127,7 +139,7 @@ export class Database {
   private _ready = false
 
   private constructor() {
-    const dataDir = resolveDataDir()
+    const dataDir = config.dataDir
     if (!existsSync(dataDir)) {
       mkdirSync(dataDir, { recursive: true })
     }
@@ -166,6 +178,12 @@ export class Database {
     }
     if (!sessionCols.includes('mode')) {
       this.db.exec(`ALTER TABLE sessions ADD COLUMN mode TEXT NOT NULL DEFAULT 'mixed'`)
+    }
+
+    // Migrate: add domain column to session_digests if not exists
+    const digestCols = (this.db.pragma('table_info(session_digests)') as Array<{name: string}>).map(c => c.name)
+    if (!digestCols.includes('domain')) {
+      this.db.exec(`ALTER TABLE session_digests ADD COLUMN domain TEXT`)
     }
   }
 

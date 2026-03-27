@@ -1,0 +1,27 @@
+{
+  "name": "nous-marketplace",
+  "owner": {
+    "name": "yushenw",
+    "email": "yushenw@users.noreply.github.com"
+  },
+  "metadata": {
+    "description": "Nous — AI user perception system for Claude Code",
+    "version": "0.2.0"
+  },
+  "plugins": [
+    {
+      "name": "nous",
+      "source": "./",
+      "description": "Silently models your behavior and injects context so Claude always knows where you left off",
+      "version": "0.2.0",
+      "author": {
+        "name": "yushenw"
+      },
+      "homepage": "https://github.com/yushenw/nous#readme",
+      "repository": "https://github.com/yushenw/nous",
+      "license": "MIT",
+      "keywords": ["perception", "user-model", "context", "memory"],
+      "category": "productivity"
+    }
+  ]
+}

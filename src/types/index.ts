@@ -42,6 +42,7 @@ export interface StopPayload {
 }
 
 // ExpertiseLevel: how well the user knows a topic
+// @deprecated: replaced by interests in UserModel
 export type ExpertiseLevel = 'deep' | 'mid' | 'shallow'
 
 // UserModel: the core asset — continuously updated developer profile
@@ -49,8 +50,8 @@ export interface UserModel {
   userId: string  // hash of machine id + user
   updatedAt: number
 
-  // Slow-changing: expertise and working style
-  expertise: Record<string, ExpertiseLevel>  // e.g. { rust: 'deep', react: 'mid' }
+  // Slow-changing: interests derived from session domains
+  interests: { recent: string[], trending: string[] }
   workingStyle: {
     prefersTDD: boolean | null
     commentsHabit: 'none' | 'sparse' | 'detailed' | null
@@ -176,7 +177,34 @@ export interface SessionDigest {
   topics: string[]         // extracted topic keywords
   outcome: 'resolved' | 'abandoned' | 'ongoing'
   notable?: string         // optional: pattern worth adding to blind spots
+  domain?: string          // technical domain of the session
   createdAt: number
 }
 
 export type SessionMode = 'qa' | 'learning' | 'building' | 'debugging' | 'research' | 'mixed'
+
+// KnowledgeCategory: type of knowledge item
+export type KnowledgeCategory = 'concept' | 'howto' | 'project'
+
+// KnowledgeItem: a question or concept worth remembering across sessions
+export interface KnowledgeItem {
+  id?: number
+  title: string              // short concept/question name, e.g. "Jaccard 相似度"
+  content: string            // concise explanation, 1-3 sentences
+  category: KnowledgeCategory
+  weight: number             // accumulated importance score
+  askCount: number           // how many times asked/seen
+  projectPath: string        // which project directory this was asked in
+  tags: string[]             // topic tags
+  sessionIds: string[]       // source session ids
+  createdAt: number
+  lastSeenAt: number
+}
+
+// RawKnowledgeItem: AI output before storage (no weight/count fields)
+export interface RawKnowledgeItem {
+  title: string
+  content: string
+  category: KnowledgeCategory
+  tags: string[]
+}

@@ -1,30 +1,49 @@
-import { generateText } from 'ai'
-import { createAnthropic } from '@ai-sdk/anthropic'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
 import type { AIProvider } from './base.js'
 
-// Default model to use for all completions
-const DEFAULT_MODEL = 'claude-3-5-haiku-20241022'
+const execFileAsync = promisify(execFile)
+
+// JSON shape returned by `claude -p --output-format json`
+interface ClaudeJsonResult {
+  type: string
+  subtype: string
+  is_error: boolean
+  result: string
+}
 
 export class ClaudeProvider implements AIProvider {
   readonly name = 'claude'
-  private model: ReturnType<ReturnType<typeof createAnthropic>>
+  private model: string
 
-  constructor(modelId = DEFAULT_MODEL) {
-    // If ANTHROPIC_API_KEY is set, use it directly.
-    // Otherwise let the SDK pick up Claude Code CLI auth automatically.
-    const anthropic = process.env.ANTHROPIC_API_KEY
-      ? createAnthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
-      : createAnthropic()
-
-    this.model = anthropic(modelId)
+  constructor(model = 'haiku') {
+    this.model = model
   }
 
   async complete(prompt: string, systemPrompt?: string): Promise<string> {
-    const { text } = await generateText({
-      model: this.model,
-      prompt,
-      ...(systemPrompt ? { system: systemPrompt } : {}),
+    const args = [
+      '-p', prompt,
+      '--output-format', 'json',
+      '--model', this.model,
+      '--tools', '',
+      '--no-session-persistence',
+    ]
+
+    if (systemPrompt) {
+      args.push('--system-prompt', systemPrompt)
+    }
+
+    const { stdout } = await execFileAsync('claude', args, {
+      timeout: 60_000,
+      maxBuffer: 1024 * 1024,
     })
-    return text
+
+    const parsed = JSON.parse(stdout.trim()) as ClaudeJsonResult
+
+    if (parsed.is_error) {
+      throw new Error(`claude -p returned error: ${parsed.result}`)
+    }
+
+    return parsed.result
   }
 }

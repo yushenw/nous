@@ -2,6 +2,7 @@ import { getDb } from '../storage/database.js'
 import { UserModelStore } from '../storage/user-model-store.js'
 import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { ClaudeProvider } from '../provider/claude.js'
+import { config } from '../config.js'
 import { extractSketch } from '../indexer/sketch-extractor.js'
 import { OperationLogStore } from '../storage/operation-log-store.js'
 import { aggregateTopics } from '../analyzer/topic-extractor.js'
@@ -9,11 +10,14 @@ import { classifySession } from '../analyzer/session-classifier.js'
 import { DigestGenerator } from './digest-generator.js'
 import { SessionDigestStore } from '../storage/session-digest-store.js'
 import { analyzeBehavior } from '../analyzer/behavior-analyzer.js'
+import { KnowledgeStore } from '../storage/knowledge-store.js'
+import { KnowledgeWriter } from './knowledge-writer.js'
 import type {
   HostEvent,
   UserMessagePayload,
   ToolUsePayload,
   UserModel,
+  RawKnowledgeItem,
 } from '../types/index.js'
 
 // Rough heuristic: map tool names to cognitive phase
@@ -46,10 +50,15 @@ function inferCognitiveState(content: string): UserModel['cognitiveState'] {
 export class EventProcessor {
   private userModelStore = new UserModelStore()
   private skStore = new StableKnowledgeStore()
-  private ai = new ClaudeProvider()
+  private ai = new ClaudeProvider(config.model)
   private opLogStore = new OperationLogStore()
   private digestGenerator = new DigestGenerator()
   private digestStore = new SessionDigestStore()
+  private knowledgeStore = new KnowledgeStore()
+  private knowledgeWriter = new KnowledgeWriter()
+  // Per-session message buffer for incremental knowledge extraction
+  private readonly messageBuffers = new Map<string, { messages: string[], extractedCount: number }>()
+  private readonly KNOWLEDGE_THRESHOLD = 5
 
   /** Mark session as active in the sessions table */
   processSessionStart(event: HostEvent): void {
@@ -66,7 +75,7 @@ export class EventProcessor {
       const defaultModel: UserModel = {
         userId: 'default',
         updatedAt: Date.now(),
-        expertise: {},
+        interests: { recent: [], trending: [] },
         workingStyle: {
           prefersTDD: null,
           commentsHabit: null,
@@ -104,6 +113,20 @@ export class EventProcessor {
       this.userModelStore.updateFocus({
         ...model.currentFocus,
         phase: cogState === 'debugging' ? 'debug' : cogState === 'focused' ? 'implement' : 'explore',
+      })
+    }
+
+    // Buffer messages for incremental knowledge extraction
+    const buf = this.messageBuffers.get(event.sessionId) ?? { messages: [], extractedCount: 0 }
+    buf.messages.push(payload.content)
+    this.messageBuffers.set(event.sessionId, buf)
+
+    const pending = buf.messages.length - buf.extractedCount
+    if (pending >= this.KNOWLEDGE_THRESHOLD) {
+      buf.extractedCount = buf.messages.length
+      const batch = buf.messages.slice(-this.KNOWLEDGE_THRESHOLD)
+      this.extractKnowledgeIncremental(event.sessionId, event.projectPath, batch).catch((err: unknown) => {
+        console.error('[nous] knowledge extract error:', err)
       })
     }
   }
@@ -179,7 +202,7 @@ export class EventProcessor {
     if (row.cnt % 5 !== 0) return
 
     const sketches = this.opLogStore.getBySession(sessionId)
-    const topics = aggregateTopics(sketches, 8)
+    const topics = aggregateTopics(sketches, 8, projectPath)
     const mode = classifySession(sketches)
 
     db.prepare(`
@@ -202,7 +225,10 @@ export class EventProcessor {
     const sketches = this.opLogStore.getBySession(sessionId)
     if (sketches.length === 0) return
 
-    const topics = aggregateTopics(sketches, 8)
+    const sessionRow = db.prepare(`SELECT project_path FROM sessions WHERE session_id = ?`).get(sessionId) as { project_path: string } | undefined
+    const projectPath = sessionRow?.project_path
+
+    const topics = aggregateTopics(sketches, 8, projectPath)
     const mode = classifySession(sketches)
 
     db.prepare(`
@@ -235,6 +261,15 @@ export class EventProcessor {
 
     this.digestStore.upsert(digest)
 
+    // Flush remaining message buffer at session end
+    const buf = this.messageBuffers.get(event.sessionId)
+    if (buf && buf.messages.length > buf.extractedCount) {
+      const remaining = buf.messages.slice(buf.extractedCount)
+      buf.extractedCount = buf.messages.length
+      await this.extractKnowledgeIncremental(event.sessionId, event.projectPath, remaining)
+    }
+    this.messageBuffers.delete(event.sessionId)
+
     await this.maybeUpdateUserModel(event.projectPath)
 
     // Update session record with final mode and topics
@@ -247,8 +282,12 @@ export class EventProcessor {
       this.userModelStore.addBlindSpot(digest.notable)
     }
 
-    // Distill high-value sessions into stable knowledge
-    if (digest.outcome === 'resolved' && digest.mode === 'building') {
+    // Distill high-value sessions into stable knowledge.
+    // Trigger if: any resolved session, OR a building session that wasn't abandoned.
+    const shouldDistill =
+      digest.outcome === 'resolved' ||
+      (digest.mode === 'building' && digest.outcome !== 'abandoned')
+    if (shouldDistill) {
       await this.distillFromDigest(event, digest)
     }
   }
@@ -265,8 +304,8 @@ export class EventProcessor {
       SELECT COUNT(*) as cnt FROM session_digests WHERE project_path = ?
     `).get(projectPath) as { cnt: number }
 
-    // Refresh every 5 sessions
-    if (row.cnt % 5 !== 0) return
+    // Refresh after 1st session, then every 3 sessions
+    if (row.cnt !== 1 && row.cnt % 3 !== 0) return
 
     // Pull recent digests (last 90 days) for analysis
     const digests = this.digestStore.getRecent(projectPath, 200)
@@ -277,17 +316,14 @@ export class EventProcessor {
     const current = this.userModelStore.get()
     if (!current) return
 
-    // Merge new expertise into existing (don't downgrade existing knowledge)
-    const mergedExpertise = { ...current.expertise }
-    for (const [topic, level] of Object.entries(snapshot.expertise)) {
-      const rank = { deep: 2, mid: 1, shallow: 0 } as const
-      const currentRank = current.expertise[topic] !== undefined
-        ? rank[current.expertise[topic]]
-        : -1
-      if (rank[level] > currentRank) {
-        mergedExpertise[topic] = level
-      }
-    }
+    // Derive interests from recent digest domains
+    const now = Date.now()
+    const recentDigests = this.digestStore.getRecent(projectPath, 30)
+    const threeDaysAgo = now - 3 * 86_400_000
+    const sevenDaysAgo = now - 7 * 86_400_000
+    const trending = [...new Set(recentDigests.filter(d => d.createdAt >= threeDaysAgo && d.domain).map(d => d.domain!))]
+    const recent = [...new Set(recentDigests.filter(d => d.createdAt >= sevenDaysAgo && d.domain).map(d => d.domain!))]
+    const interests: UserModel['interests'] = { recent, trending }
 
     // Merge working style (only update nulls — don't override user-set preferences)
     const mergedStyle: UserModel['workingStyle'] = {
@@ -305,11 +341,84 @@ export class EventProcessor {
 
     this.userModelStore.upsert({
       ...current,
-      expertise: mergedExpertise,
+      interests,
       workingStyle: mergedStyle,
       currentFocus: updatedFocus,
       updatedAt: Date.now(),
     })
+  }
+
+  private async extractKnowledgeIncremental(
+    sessionId: string,
+    projectPath: string,
+    messages: string[],
+  ): Promise<void> {
+    if (messages.length === 0) return
+
+    const numbered = messages.map((m, i) => `${i + 1}. ${m.slice(0, 300)}`).join('\n')
+    const prompt = `From these user messages in a coding session, extract knowledge items worth remembering for future reference.
+Project directory: ${projectPath}
+
+Messages:
+${numbered}
+
+For each distinct knowledge item the user was genuinely asking to understand, output a JSON array:
+[
+  {
+    "title": "short concept/question name",
+    "content": "concise explanation in 1-3 sentences",
+    "category": "concept|howto|project",
+    "tags": ["tag1", "tag2"]
+  }
+]
+
+Rules:
+- "concept": new term or theory the user didn't know (e.g. Jaccard similarity, Weibull decay)
+- "howto": technique or tool usage question (e.g. SQLite upsert syntax)
+- "project": question specific to the current project's code/architecture
+- Pure implementation instructions ("implement X", "fix Y") → skip
+- If nothing worth recording, return: []
+
+Respond with JSON array only, no markdown fences.`
+
+    let raw: string
+    try {
+      raw = await this.ai.complete(prompt)
+    } catch {
+      return
+    }
+
+    const match = raw.match(/\[[\s\S]*\]/)
+    if (!match) return
+
+    let items: RawKnowledgeItem[]
+    try {
+      items = JSON.parse(match[0]) as RawKnowledgeItem[]
+    } catch {
+      return
+    }
+
+    if (!Array.isArray(items) || items.length === 0) return
+
+    const newIds = new Set<number>()
+
+    for (const item of items) {
+      if (!item.title || !item.content || !item.category) continue
+      const validCategories = ['concept', 'howto', 'project']
+      if (!validCategories.includes(item.category)) continue
+
+      const result = this.knowledgeStore.upsert(item, projectPath, sessionId)
+      if (result.isNew) newIds.add(result.id)
+    }
+
+    // Get the just-upserted items to write to files
+    const topItems = this.knowledgeStore.getTopByScore(30, projectPath)
+    const justTouched = topItems.filter(i => i.id !== undefined && (
+      newIds.has(i.id) || i.sessionIds.includes(sessionId)
+    ))
+
+    this.knowledgeWriter.appendToDaily(justTouched.slice(0, items.length), newIds, projectPath)
+    this.knowledgeWriter.updateIndex(topItems)
   }
 
   private async distillFromDigest(

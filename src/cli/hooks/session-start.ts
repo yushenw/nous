@@ -12,13 +12,15 @@ export {}
  */
 
 import { spawn } from 'child_process'
-import { join } from 'path'
+import { join, dirname } from 'path'
 import { homedir } from 'os'
 
 const PORT = process.env.NOUS_PORT ?? '37888'
 const WORKER_URL = `http://127.0.0.1:${PORT}`
 const DATA_DIR = process.env.NOUS_DATA_DIR ?? join(homedir(), '.nous')
-const WORKER_SCRIPT = join(DATA_DIR, 'scripts', 'worker-service.cjs')
+// Locate worker-service.cjs relative to this script (works in both plugin and ~/.nous modes)
+const SCRIPTS_DIR = typeof __dirname !== 'undefined' ? __dirname : dirname(process.argv[1] || '')
+const WORKER_SCRIPT = join(SCRIPTS_DIR, 'worker-service.cjs')
 const LOG_FILE = join(DATA_DIR, 'worker.log')
 
 /** Returns true if the worker is up and ready. */

@@ -1,6 +1,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
+import { homedir } from 'os'
 import { Database } from '../storage/database.js'
 import { RecallTool } from '../injection/recall-tool.js'
 
@@ -63,6 +64,55 @@ server.tool(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       return { content: [{ type: 'text' as const, text: `Error running topics: ${msg}` }], isError: true }
+    }
+  },
+)
+
+server.tool(
+  'review',
+  'Review knowledge items accumulated across sessions, sorted by importance weight. Optionally filter by project, category, or search query.',
+  {
+    project_path: z.string().optional().describe('Filter to a specific project directory (omit for cross-project)'),
+    category: z.enum(['concept', 'howto', 'project']).optional().describe('Filter by category'),
+    query: z.string().optional().describe('Search keyword to filter items'),
+    limit: z.number().optional().describe('Max items to show (default 20)'),
+  },
+  async ({ project_path, category, query, limit }) => {
+    try {
+      const { KnowledgeStore } = await import('../storage/knowledge-store.js')
+      const store = new KnowledgeStore()
+
+      let items
+      if (query) {
+        items = store.search(query, project_path, category as import('../types/index.js').KnowledgeCategory | undefined)
+      } else if (project_path) {
+        items = store.getTopByScore(limit ?? 20, project_path)
+      } else {
+        items = store.getAll().slice(0, limit ?? 20)
+      }
+
+      if (category) items = items.filter(i => i.category === category)
+
+      if (items.length === 0) {
+        return { content: [{ type: 'text' as const, text: 'No knowledge items found.' }] }
+      }
+
+      const shortPath = (p: string) => p.replace(homedir(), '~')
+
+      const lines = [`## Knowledge Review (${items.length} items)\n`]
+      for (const item of items) {
+        const repeat = item.askCount > 1 ? ` ×${item.askCount}` : ''
+        const tags = item.tags.length ? ` · ${item.tags.join(', ')}` : ''
+        lines.push(`### [${item.category}${repeat}] ${item.title} — weight ${item.weight.toFixed(1)}`)
+        lines.push(item.content)
+        lines.push(`\`${shortPath(item.projectPath)}\`${tags}`)
+        lines.push('')
+      }
+
+      return { content: [{ type: 'text' as const, text: lines.join('\n') }] }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      return { content: [{ type: 'text' as const, text: `Error: ${msg}` }], isError: true }
     }
   },
 )

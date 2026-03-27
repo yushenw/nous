@@ -1,6 +1,7 @@
 import { ClaudeProvider } from '../provider/claude.js'
-import { aggregateTopics } from '../analyzer/topic-extractor.js'
+import { aggregateTopics, buildPathBlocklist } from '../analyzer/topic-extractor.js'
 import { classifySession } from '../analyzer/session-classifier.js'
+import { config } from '../config.js'
 import type { OperationSketch, SessionDigest, SessionMode } from '../types/index.js'
 
 // Maximum number of sketch entries to include in the prompt
@@ -65,6 +66,7 @@ Respond with JSON only, no markdown fences:
 {
   "summary": "one sentence describing what the user did/learned/built",
   "mode": "${['qa', 'learning', 'building', 'debugging', 'research', 'mixed'].join('|')}",
+  "domain": "the technical domain: web-frontend|web-backend|systems|ml|data|devops|tooling|mobile|general",
   "topics": ["topic1", "topic2"],
   "outcome": "resolved|abandoned|ongoing",
   "notable": "optional: a recurring pattern or blind spot worth remembering, or null"
@@ -78,7 +80,7 @@ function sampleEvenly<T>(arr: T[], n: number): T[] {
 }
 
 export class DigestGenerator {
-  private ai = new ClaudeProvider()
+  private ai = new ClaudeProvider(config.model)
 
   /**
    * Generate a SessionDigest from the operation log of a completed session.
@@ -94,7 +96,7 @@ export class DigestGenerator {
 
     // Use rule-based classification as fallback / hint for AI
     const preMode = classifySession(sketches)
-    const preTopics = aggregateTopics(sketches, 8)
+    const preTopics = aggregateTopics(sketches, 8, projectPath)
 
     const prompt = buildPrompt(sketches, userPrompt, preMode, preTopics)
 
@@ -110,6 +112,7 @@ export class DigestGenerator {
         mode: preMode,
         topics: preTopics,
         outcome: 'ongoing',
+        domain: undefined,
         createdAt: Date.now(),
       }
     }
@@ -130,7 +133,11 @@ export class DigestGenerator {
       : preTopics
 
     // Merge AI topics with rule-based ones (AI is authoritative, rules fill gaps)
-    const mergedTopics = [...new Set([...aiTopics, ...preTopics])].slice(0, 10)
+    // Filter out path components that the AI may have included (e.g. "home", "liaix", "pjs")
+    const pathBlocklist = buildPathBlocklist(projectPath)
+    const mergedTopics = [...new Set([...aiTopics, ...preTopics])]
+      .filter(t => !pathBlocklist.has(t))
+      .slice(0, 10)
 
     return {
       sessionId,
@@ -142,6 +149,7 @@ export class DigestGenerator {
       notable: typeof parsed.notable === 'string' && parsed.notable !== 'null'
         ? parsed.notable
         : undefined,
+      domain: typeof parsed.domain === 'string' ? parsed.domain : undefined,
       createdAt: Date.now(),
     }
   }

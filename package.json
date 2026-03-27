@@ -27,6 +27,7 @@
     "release": "bun run build.ts && tar -czf scripts.tar.gz -C plugin/scripts .",
     "dev": "bun --watch src/worker/server.ts",
     "typecheck": "bunx tsc --noEmit",
+    "test": "bun test",
     "clean": "rm -rf plugin/scripts scripts.tar.gz"
   },
   "dependencies": {

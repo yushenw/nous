@@ -1,6 +1,7 @@
 import { UserModelStore } from '../storage/user-model-store.js'
 import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { SessionDigestStore } from '../storage/session-digest-store.js'
+import { KnowledgeStore } from '../storage/knowledge-store.js'
 import { getDb } from '../storage/database.js'
 import type { SessionDigest } from '../types/index.js'
 
@@ -10,6 +11,7 @@ export class ContextBuilder {
   private userModelStore = new UserModelStore()
   private skStore = new StableKnowledgeStore()
   private digestStore = new SessionDigestStore()
+  private knowledgeStore = new KnowledgeStore()
 
   /**
    * Build the full injection context for a SessionStart event.
@@ -30,6 +32,9 @@ export class ContextBuilder {
 
     const lastSession = this.buildLastSessionSection(projectPath)
     if (lastSession) sections.push(lastSession)
+
+    const knowledgeSnap = this.buildKnowledgeSnapshot(projectPath)
+    if (knowledgeSnap) sections.push(knowledgeSnap)
 
     if (sections.length === 0) return null
     return sections.join('\n\n')
@@ -72,19 +77,11 @@ export class ContextBuilder {
 
     const lines: string[] = ['## Developer Profile']
 
-    // Expertise — only show if populated
-    const expertiseEntries = Object.entries(model.expertise)
-    if (expertiseEntries.length > 0) {
-      const byLevel = {
-        deep: expertiseEntries.filter(([, l]) => l === 'deep').map(([t]) => t),
-        mid: expertiseEntries.filter(([, l]) => l === 'mid').map(([t]) => t),
-        shallow: expertiseEntries.filter(([, l]) => l === 'shallow').map(([t]) => t),
-      }
-      const parts: string[] = []
-      if (byLevel.deep.length) parts.push(`expert: ${byLevel.deep.join(', ')}`)
-      if (byLevel.mid.length) parts.push(`familiar: ${byLevel.mid.join(', ')}`)
-      if (byLevel.shallow.length) parts.push(`learning: ${byLevel.shallow.join(', ')}`)
-      lines.push(`Expertise — ${parts.join(' · ')}`)
+    // Recent interests from session domains
+    if (model.interests.trending.length) {
+      lines.push(`Active domains — ${model.interests.trending.join(', ')}`)
+    } else if (model.interests.recent.length) {
+      lines.push(`Recent domains — ${model.interests.recent.join(', ')}`)
     }
 
     // Working style — only show non-null values
@@ -124,9 +121,16 @@ export class ContextBuilder {
     const items = this.skStore.getAll(projectPath)
     if (items.length === 0) return null
 
+    // Pinned items first, then by recency; cap at 5 to control token cost
+    const sorted = [...items].sort((a, b) => {
+      if (a.pinnedByUser !== b.pinnedByUser) return a.pinnedByUser ? -1 : 1
+      return b.updatedAt - a.updatedAt
+    }).slice(0, 5)
+
     const lines = ['## Stable Knowledge']
-    for (const item of items) {
-      lines.push(`### [${item.type}] ${item.title}`)
+    for (const item of sorted) {
+      const pin = item.pinnedByUser ? ' [pinned]' : ''
+      lines.push(`### [${item.type}] ${item.title}${pin}`)
       lines.push(item.content)
     }
     return lines.join('\n')
@@ -177,6 +181,19 @@ export class ContextBuilder {
     lines.push(`**Summary:** ${d.summary}`)
     lines.push(`**Outcome:** ${d.outcome}`)
     if (d.notable) lines.push(`**Note:** ${d.notable}`)
+    return lines.join('\n')
+  }
+
+  private buildKnowledgeSnapshot(projectPath: string): string | null {
+    const items = this.knowledgeStore.getTopByScore(5, projectPath)
+    if (items.length === 0) return null
+
+    const lines = ['## Recent Questions']
+    for (const item of items) {
+      const project = projectPath === item.projectPath ? '' : ` (${item.projectPath.split('/').pop()})`
+      const repeat = item.askCount > 1 ? ` ×${item.askCount}` : ''
+      lines.push(`- [${item.category}${repeat}] **${item.title}**${project} — ${item.content.slice(0, 80)}`)
+    }
     return lines.join('\n')
   }
 

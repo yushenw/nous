@@ -1,8 +1,7 @@
-import { ObservationStore } from '../storage/observation-store.js'
 import { StableKnowledgeStore } from '../storage/stable-knowledge-store.js'
 import { SessionDigestStore } from '../storage/session-digest-store.js'
 import { OperationLogStore } from '../storage/operation-log-store.js'
-import type { Observation, StableKnowledge, SessionDigest, OperationSketch } from '../types/index.js'
+import type { StableKnowledge, SessionDigest, OperationSketch } from '../types/index.js'
 
 export interface RecallResult {
   markdown: string
@@ -10,7 +9,6 @@ export interface RecallResult {
 }
 
 export class RecallTool {
-  private obsStore = new ObservationStore()
   private skStore = new StableKnowledgeStore()
   private digestStore = new SessionDigestStore()
   private opLogStore = new OperationLogStore()
@@ -21,15 +19,13 @@ export class RecallTool {
    */
   recall(query: string, projectPath?: string): RecallResult {
     const knowledge = this.skStore.search(query)
-    const observations = this.obsStore.search(query, projectPath)
     const digests = this.digestStore.search(query, projectPath)
 
     const sections: string[] = []
     if (knowledge.length > 0) sections.push(this.formatKnowledge(knowledge))
     if (digests.length > 0) sections.push(this.formatDigests(digests))
-    if (observations.length > 0) sections.push(this.formatObservations(observations))
 
-    const totalHits = knowledge.length + digests.length + observations.length
+    const totalHits = knowledge.length + digests.length
 
     if (sections.length === 0) {
       return { markdown: `_No results found for: "${query}"_`, totalHits: 0 }
@@ -53,7 +49,9 @@ export class RecallTool {
     // Find matching digests
     const digests = topic
       ? this.digestStore.search(topic, projectPath)
-      : this.digestStore.getRecent(projectPath ?? '', 5)
+      : projectPath
+        ? this.digestStore.getRecent(projectPath, 5)
+        : this.digestStore.getGlobal(5)
 
     if (digests.length === 0) {
       return {
@@ -167,19 +165,6 @@ export class RecallTool {
     return lines.join('\n')
   }
 
-  private formatObservations(items: Observation[]): string {
-    const lines = ['### Working Memory']
-    for (const obs of items) {
-      lines.push(`#### [${obs.type}] ${obs.title}`)
-      if (obs.subtitle) lines.push(`_${obs.subtitle}_`)
-      lines.push(obs.narrative)
-      if (obs.facts.length > 0) {
-        lines.push('**Key facts:**')
-        for (const fact of obs.facts) lines.push(`- ${fact}`)
-      }
-    }
-    return lines.join('\n')
-  }
 }
 
 // --- Shared helpers ---

@@ -64,13 +64,19 @@ export function extractTopicsFromSketch(sketch: OperationSketch): TopicWeight[] 
 /**
  * Aggregate topics from a collection of sketches.
  * Returns topics sorted by total weight, deduplicated.
+ * Pass projectPath to suppress noisy root-path tokens (e.g. "home", "liaix", "pjs").
  */
-export function aggregateTopics(sketches: OperationSketch[], topN = 10): string[] {
+export function aggregateTopics(sketches: OperationSketch[], topN = 10, projectPath?: string): string[] {
   const weights = new Map<string, number>()
+
+  // Build a blocklist from the project path root segments
+  const pathBlocklist = buildPathBlocklist(projectPath)
 
   for (const sketch of sketches) {
     for (const { topic, weight } of extractTopicsFromSketch(sketch)) {
-      weights.set(topic, (weights.get(topic) ?? 0) + weight)
+      if (!pathBlocklist.has(topic)) {
+        weights.set(topic, (weights.get(topic) ?? 0) + weight)
+      }
     }
   }
 
@@ -78,6 +84,20 @@ export function aggregateTopics(sketches: OperationSketch[], topN = 10): string[
     .sort((a, b) => b[1] - a[1])
     .slice(0, topN)
     .map(([topic]) => topic)
+}
+
+/** Extract path segment tokens from a project root path to use as a noise blocklist. */
+export function buildPathBlocklist(projectPath?: string): Set<string> {
+  if (!projectPath) return new Set()
+  const blocklist = new Set<string>()
+  const segments = projectPath.replace(/\\/g, '/').split('/').filter(Boolean)
+  for (const seg of segments) {
+    const tokens = seg.split(/[-_.]/).filter(t => t.length >= 2)
+    for (const t of tokens) {
+      blocklist.add(t.toLowerCase())
+    }
+  }
+  return blocklist
 }
 
 // --- Internal extraction helpers ---
